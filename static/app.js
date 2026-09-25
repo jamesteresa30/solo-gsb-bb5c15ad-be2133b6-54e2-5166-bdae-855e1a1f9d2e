@@ -160,6 +160,17 @@ const EXAMPLE_CLOCK_CONFLICT_RECORDS = [
   "老李,午饭,115",
 ].join("\n");
 
+// 全局容差评估——无需放宽示例：原文本身可行，最小容差 k = 0。
+const EXAMPLE_TOLERANCE_OK_TEXT = EXAMPLE_OK;
+
+// 全局容差评估——需放宽示例：三句首尾相接，原界环上权和 −30、环长 3，
+// 每条区间向两侧统一放宽 k 分钟；最小容差 k = ⌈30/3⌉ = 10 分钟（k=9 时该环仍为 −3）。
+const EXAMPLE_TOLERANCE_CONFLICT_TEXT = [
+  "起床,午饭,0,30",
+  "午饭,睡觉,0,30",
+  "睡觉,起床,-120,-90",
+].join("\n");
+
 const $ = (id) => document.getElementById(id);
 const resultEl = $("result");
 const redundancyEl = $("redundancy-result");
@@ -186,6 +197,7 @@ const maxgapOrderEl = $("maxgap-order");
 const maxgapEl = $("maxgap-result");
 const clockRecordsEl = $("clock-records");
 const clockEl = $("clock-result");
+const toleranceEl = $("tolerance-result");
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -769,6 +781,7 @@ $("btn-clear").addEventListener("click", () => {
   itineraryEl.innerHTML = "";
   maxgapEl.innerHTML = "";
   clockEl.innerHTML = "";
+  toleranceEl.innerHTML = "";
   refreshLineOptions();
   inputEl.focus();
 });
@@ -784,6 +797,7 @@ inputEl.addEventListener("input", () => {
   itineraryEl.innerHTML = "";   // 区间已变，旧的行程可达性结论作废
   maxgapEl.innerHTML = "";      // 区间已变，旧的最大统一间隔结论作废
   clockEl.innerHTML = "";       // 区间已变，旧的时钟对齐结论作废
+  toleranceEl.innerHTML = "";   // 区间已变，旧的全局容差结论作废
 });
 refreshLineOptions();
 
@@ -2184,4 +2198,150 @@ $("btn-clock-clear").addEventListener("click", () => {
 });
 clockRecordsEl.addEventListener("input", () => {
   clockEl.innerHTML = "";  // 记录已变，旧的时钟对齐结论作废
+});
+
+// ---------- 全局容差评估 ----------
+
+// 容差冲突链的标签：同时显示原界与 k−1 时实际使用的扩展界
+function toleranceStepTagHtml(s) {
+  return `<span class="tag ${s.kind}">第 ${s.line} 行 · ${esc(s.kind_label)}：原界 ${s.original_bound} → 扩展界 ${s.expanded_bound}</span>`;
+}
+
+// k−1 时的闭合冲突链：每环标注原始行号、原界与所用扩展界值，最后回到起点
+function toleranceConflictChainHtml(c) {
+  const parts = [];
+  c.steps.forEach((s, i) => {
+    if (i === 0) parts.push(`<div class="chain-node">${esc(s.from)}</div>`);
+    parts.push(`
+      <div class="chain-edge">
+        ${toleranceStepTagHtml(s)}
+        <span class="rel">${esc(s.relation)}</span>
+        <span class="chain-arrow">→</span>
+      </div>
+      <div class="chain-node">${esc(s.to)}</div>`);
+  });
+  parts.push(`
+    <div class="chain-edge"><span class="muted">闭合回到</span><span class="chain-arrow">⟲</span></div>
+    <div class="chain-node">${esc(c.closes_to)}</div>`);
+  return `<div class="chain">${parts.join("")}</div>`;
+}
+
+function renderToleranceConflictBlock(bc) {
+  const c = bc.conflict;
+  const detailRows = c.steps.map((s) => `
+    <tr>
+      <td class="num">第 ${s.line} 行</td>
+      <td>${esc(s.from)} → ${esc(s.to)}</td>
+      <td><span class="tag ${s.kind}">${esc(s.kind_label)}</span></td>
+      <td class="num">${s.original_bound}</td>
+      <td class="num">${s.expanded_bound}</td>
+      <td>${esc(s.relation)}</td>
+    </tr>`).join("");
+
+  return `
+    <div class="card">
+      <h3>为何不能再缩小：k−1 = ${c.slack_tested} 分钟时的闭合冲突链</h3>
+      <p>${esc(bc.message)}</p>
+      ${toleranceConflictChainHtml(c)}
+    </div>
+    <div class="card">
+      <h3>冲突环用到的原始行与扩展界值（k−1 = ${c.slack_tested} 分钟）</h3>
+      <table>
+        <thead><tr>
+          <th class="num">原始行号</th><th>图中方向</th><th>使用的界</th>
+          <th class="num">原界值</th><th class="num">k−1 扩展界值</th><th>含义</th>
+        </tr></thead>
+        <tbody>${detailRows}</tbody>
+      </table>
+      <p class="muted">环上 ${c.cycle_length} 条边的原界权之和为 <strong>${c.original_weight_sum} &lt; 0</strong>
+      （原约束矛盾）；统一放宽 k 分钟使每条边权增加 k，环权变为 ${c.original_weight_sum} + ${c.cycle_length}k。
+      要使其 ≥ 0 需 k ≥ ⌈${-c.original_weight_sum}/${c.cycle_length}⌉ = <strong>${c.required_k}</strong>，
+      恰为求出的最小容差；k−1 = ${c.slack_tested} 时环权仍为 ${c.weight_sum} &lt; 0，故不能再缩小。</p>
+    </div>`;
+}
+
+function renderTolerance(data) {
+  const k = data.k;
+  const banner = k === 0
+    ? `
+    <div class="banner ok">
+      <h2>✓ 最小容差 k = 0 分钟</h2>
+      <p>${esc(data.message)} 共 ${data.event_count} 个事件、${data.total_lines} 条约束。</p>
+    </div>`
+    : `
+    <div class="banner conflict">
+      <h2>最小容差 k = ${k} 分钟</h2>
+      <p>${esc(data.message)}</p>
+    </div>`;
+
+  const rowRows = data.rows.map((r) => {
+    const expFit = r.low - k <= r.actual && r.actual <= r.high + k;
+    const origFit = r.fits_original;
+    return `<tr${origFit ? "" : ' class="combo-conflict"'}>
+      <td class="num">${r.line}</td>
+      <td>${esc(r.a)} → ${esc(r.b)}</td>
+      <td class="num">[${r.low}, ${r.high}]</td>
+      <td class="num">[${r.expanded_low}, ${r.expanded_high}]</td>
+      <td class="num">−${r.low_shift} / +${r.high_shift}</td>
+      <td class="num">${r.actual}</td>
+      <td class="num">${r.lower_slack} / ${r.upper_slack}</td>
+      <td>${origFit ? '<span class="ok-text">本来就满足</span>' : '<span class="tag unlocated">原区间不满足</span>'}</td>
+      <td>${expFit ? '<span class="ok-text">满足</span>' : '<span style="color:var(--err)">不满足</span>'}</td>
+    </tr>`;
+  }).join("");
+
+  const rowsCard = data.rows.length
+    ? `
+    <div class="card">
+      <h3>每行原区间与扩展区间的实际差值</h3>
+      <table>
+        <thead><tr>
+          <th class="num">行号</th><th>事件对</th>
+          <th class="num">原区间</th><th class="num">扩展区间 [lo−k, hi+k]</th>
+          <th class="num">下界/上界放宽</th><th class="num">本时间线差值</th>
+          <th class="num">距扩展下界/上界富余</th><th>原区间</th><th>扩展区间</th>
+        </tr></thead>
+        <tbody>${rowRows}</tbody>
+      </table>
+      <p class="muted">“距扩展下界/上界富余”分别为 本时间线差值 − (lo−k) 与 (hi+k) − 本时间线差值，
+      均非负即该时间线满足扩展后约束；高亮行是原区间本不满足、依赖统一放宽才满足的原始行。</p>
+    </div>`
+    : "";
+
+  toleranceEl.innerHTML = banner
+    + `<div class="card">
+         <h3>${k === 0 ? "原文的一条可行时间线" : `扩展 k = ${k} 分钟后的一条可行时间线`}</h3>
+         ${timelineTableHtml(data.timeline)}
+       </div>`
+    + rowsCard
+    + (data.blocking_conflict ? renderToleranceConflictBlock(data.blocking_conflict) : "");
+}
+
+async function evaluateTolerance() {
+  toleranceEl.innerHTML = `<div class="card muted">求最小统一容差中…</div>`;
+  try {
+    const resp = await fetch("/api/tolerance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: inputEl.value }),
+    });
+    const data = await resp.json();
+    if (data.status === "ok") renderTolerance(data);
+    else renderErrors(data.errors || [{ line: null, message: "未知错误。" }], toleranceEl);
+  } catch (err) {
+    toleranceEl.innerHTML = `
+      <div class="banner err"><h2>请求失败</h2><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+$("btn-tolerance").addEventListener("click", evaluateTolerance);
+$("btn-tolerance-example-ok").addEventListener("click", () => {
+  inputEl.value = EXAMPLE_TOLERANCE_OK_TEXT;
+  refreshLineOptions();
+  evaluateTolerance();
+});
+$("btn-tolerance-example-conflict").addEventListener("click", () => {
+  inputEl.value = EXAMPLE_TOLERANCE_CONFLICT_TEXT;
+  refreshLineOptions();
+  evaluateTolerance();
 });

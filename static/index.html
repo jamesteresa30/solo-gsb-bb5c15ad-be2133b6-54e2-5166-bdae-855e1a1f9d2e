@@ -43,6 +43,9 @@
         <strong>首个来源为参考时钟</strong>（偏移固定为 0），同一来源共用一个整数分钟偏移（事件真实分钟 = 本地分钟 + 偏移），
         记录等式与区间共同联立；矛盾时给出含<strong>区间行号或记录行号、所用界值</strong>的闭合冲突链；
         可解时给出各来源相对参考时钟的<strong>最紧偏移上下界</strong>，未与参考来源连通的来源标为<strong>“未定位”</strong>，不显示伪精确偏移。
+        若想知道所有叙述整体还需松动多少，可使用<strong>全局容差评估</strong>：每条区间 [lo,hi] 同时扩为 [lo−k,hi+k]，
+        后端求<strong>使全部约束可解的最小非负整数 k</strong>，给出最小 k、一条扩展后可行时间线与每行原区间、扩展区间的实际差值；
+        k&gt;0 时再给出 <strong>k−1 时含原始行号与所用扩展界值的闭合冲突链</strong>，说明为何不能再缩小一分钟。
       </p>
     </header>
 
@@ -291,6 +294,27 @@
     </section>
 
     <section id="withdraw-result" aria-live="polite"></section>
+
+    <section class="input-area">
+      <label><strong>全局容差评估</strong></label>
+      <p class="muted" style="margin-top:0">
+        直接使用上方“事件区间”文本。每条有效区间 <code>[lo, hi]</code> 同时向两侧扩为
+        <code>[lo−k, hi+k]</code>（<strong>k 为非负整数分钟</strong>），后端用同一套差分约束 Bellman-Ford
+        求<strong>使全部约束可解的最小 k</strong>（先试 k=0，不可行时指数放大再二分）。
+        返回最小 k、一条<strong>扩展后可行时间线</strong>，以及<strong>每行原区间与扩展区间的实际差值</strong>
+        （两端各放宽了多少、本时间线差值距两端还富余多少）。若 <strong>k &gt; 0</strong>，另给出
+        <strong>k−1 时含原始行号与所用扩展界值的闭合冲突链</strong>：按环上原界权和与环长算出
+        <strong>⌈−原界权和/环长⌉ = k</strong>，说明为何不能再缩小一分钟。
+        原区间已可解时最小 k = 0；语法错误沿用逐行报错。
+      </p>
+      <div class="button-row" style="margin-top:0">
+        <button id="btn-tolerance" class="primary">求最小容差</button>
+        <button id="btn-tolerance-example-ok">填入无需放宽示例</button>
+        <button id="btn-tolerance-example-conflict">填入需放宽示例</button>
+      </div>
+    </section>
+
+    <section id="tolerance-result" aria-live="polite"></section>
 
     <section id="result" aria-live="polite"></section>
   </main>
