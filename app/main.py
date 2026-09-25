@@ -2,7 +2,8 @@
 /api/compare 两版比较、/api/repair 冲突单行修订建议、/api/anchor 绝对时间锚定、
 /api/precedence 互斥说法下的先后查询、/api/withdrawals 最少撤回、
 /api/aliases 事件别名归并核对、/api/itinerary 行程可达性核对、
-/api/max-gap 有序事件最大统一间隔查询、/api/clock-align 记录时钟对齐接口。"""
+/api/max-gap 有序事件最大统一间隔查询、/api/clock-align 记录时钟对齐接口、
+/api/tolerance 全局容差评估。"""
 
 from __future__ import annotations
 
@@ -22,10 +23,11 @@ from .solver import (
     solve_clock_alignment,
     solve_max_gap,
     solve_precedence,
+    solve_tolerance,
     suggest_repairs,
 )
 
-app = FastAPI(title="口述史事件时间线核对", version="1.10.0")
+app = FastAPI(title="口述史事件时间线核对", version="1.11.0")
 
 
 class SolveRequest(BaseModel):
@@ -157,6 +159,14 @@ def api_clock_align(req: ClockAlignRequest) -> dict:
     # 记录等式与区间共同联立：冲突时返回含区间行号或记录行号、所用界值的闭合冲突链；
     # 可解时给出各来源相对参考时钟的最紧偏移上下界，未与参考来源连通的来源标为“未定位”
     return solve_clock_alignment(req.text or "", req.records or "")
+
+
+@app.post("/api/tolerance")
+def api_tolerance(req: SolveRequest) -> dict:
+    # 全局容差评估：复用首页事件区间；每条 [lo,hi] 同时扩为 [lo−k,hi+k]，
+    # 求使全部约束可解的最小非负整数 k（指数放大 + 二分）；返回最小 k、一条扩展后可行时间线、
+    # 每行原区间与扩展区间实际差值；k>0 时给出 k−1 时含原始行号与所用扩展界值的闭合冲突链
+    return solve_tolerance(req.text or "")
 
 
 @app.get("/")

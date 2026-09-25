@@ -91,6 +91,17 @@ Bellman-Ford 联立。时钟节点用带内部前缀的独立节点名，避免�
 求每个来源相对参考时钟的最紧偏移下界/上界（参考来源恒为 [0,0]）：两端都有界
 （与参考来源连通）才给偏移（相等为精确点，否则为范围），未连通来源标为“未定位”，
 不显示伪精确偏移；事件真实分钟范围与逐条记录的核对结果同法给出。
+
+全局容差评估（solve_tolerance）：沿用首页事件区间，对每个非负整数 k 把每条有效区间
+[lo,hi] 同时扩为 [lo−k,hi+k]（上界边权 hi+k、下界边权 k−lo，每条边相对原图放宽恰好 k），
+用同一套差分约束 Bellman-Ford 判定可行性。可行性随 k 单调（每条边权随 k 增加 1），
+故 k=0 可行时最小容差即 0；否则先指数放大找到可行上界、再二分最小可行整数 k。
+返回最小 k、一条扩展后可行时间线（平移到最早事件为第 0 分钟），以及每行原区间、
+扩展区间 [lo−k,hi+k]、每侧实际扩量（均为 k）与时间线实际差值。k>0 时另在 k−1 下
+还原闭合冲突链：每环标注原始行号、原界值与 k−1 时所用扩展界值；并给出环上边数、
+k−1 环权和、原始界值环权和与所需最小容差 ceil(−原始环权和 / 环上边数)，
+说明为何 k 不能再缩小（k−1 环权和 < 0，而每侧再放宽 1 分钟后该环恰好转为非负）。
+空文本/只有空行视为空约束集可行（k=0、空时间线）；语法错误沿用 parse_text 逐行报错。
 """
 
 from __future__ import annotations
@@ -2547,4 +2558,189 @@ def solve_clock_alignment(text: str, records_text: str) -> dict:
         "record_count": len(records),
         "interval_line_count": len(rows),
         "event_count": len(events),
+    }
+
+
+# ---------- 全局容差评估 ----------
+
+def _expanded_edges(rows: list[Row], index: dict[str, int], k: int) -> list[Edge]:
+    """把每条区间 [lo,hi] 同时扩为 [lo−k,hi+k] 后的上、下界边。
+
+    上界边 甲->乙 权 hi+k；下界边 乙->甲 权 k−lo。
+    即每条边的权相对原图（k=0）恰好增加 k，可行性随 k 单调。
+    """
+    edges: list[Edge] = []
+    for r in rows:
+        ia, ib = index[r.a], index[r.b]
+        edges.append(Edge(ia, ib, r.high + k, r.line, "upper", r.high + k))
+        edges.append(Edge(ib, ia, k - r.low, r.line, "lower", k - r.low))
+    return edges
+
+
+def _tolerance_step_builder(rows: list[Row]):
+    """构造同时标注原界值与扩展界值的矛盾链步骤构建器（k−1 闭合冲突链用）。
+
+    扩展边仍复用 "upper"/"lower" kind（bound 为扩展界值），另在每步附：
+    original_bound（原界值）、expansion（该侧扩量 = k−1）、expanded_low/expanded_high
+    （该行扩展后的两端）与对应的扩展区间关系文本。
+    """
+    by_line = {r.line: r for r in rows}
+
+    def build(names: list[str], e: Edge) -> dict:
+        step = _edge_step(names, e)
+        row = by_line.get(e.line)
+        if row is not None:
+            # 该步来自扩展图：边权相对原边放宽了 expansion 分钟
+            expansion = e.w - (row.high if e.kind == "upper" else -row.low)
+            step["original_bound"] = row.high if e.kind == "upper" else row.low
+            step["expansion"] = expansion
+            step["expanded_low"] = row.low - expansion
+            step["expanded_high"] = row.high + expansion
+            if e.kind == "upper":
+                step["expanded_relation"] = f"{names[e.v]}−{names[e.u]} ≤ {row.high + expansion}（原上界 {row.high} 放宽 {expansion} 分钟）"
+            else:
+                step["expanded_relation"] = f"{names[e.u]}−{names[e.v]} ≥ {row.low - expansion}（原下界 {row.low} 放宽 {expansion} 分钟）"
+        return step
+
+    return build
+
+
+def solve_tolerance(text: str) -> dict:
+    """全局容差评估：求使全部区间经统一扩宽后可解的最小非负整数 k。
+
+    每条有效区间 [lo,hi] 同时扩为 [lo−k,hi+k]（上下界各放宽 k 分钟，k 为非负整数），
+    用同一套差分约束 Bellman-Ford 联立。可行性随 k 单调（每条边权随 k 增加 1）：
+    k=0 可行时最小容差即 0；否则先指数放大找到可行上界、再二分最小可行 k。
+
+    返回最小 k、一条扩展后可行时间线（最早事件为第 0 分钟）与每行原区间、扩展区间、
+    每侧实际扩量及时间线实际差值。k>0 时另在 k−1 下还原闭合冲突链（含原始行号、
+    原界值与 k−1 时所用扩展界值），并给出环上边数、k−1 环权和、原始界值环权和与
+    所需最小容差 ceil(−原始环权和 / 环上边数)，说明为何 k 不能再缩小。
+    空文本/只有空行视为空约束集可行（k=0、空时间线）；语法错误逐行返回。
+    """
+    # 空文本/只有空行：空约束集视为可行（与最少撤回同口径；parse_text 对空文本会报错）
+    if not text or not text.strip():
+        return {
+            "status": "ok",
+            "k": 0,
+            "message": "没有任何非空约束：空约束集视为可行，最小容差 k = 0（空时间线）。",
+            "timeline": [],
+            "rows": [],
+            "event_count": 0,
+            "line_count": 0,
+            "witness": None,
+        }
+
+    rows, errors = parse_text(text)
+    if errors:
+        return {"status": "error", "errors": errors}
+    if not rows:
+        return {
+            "status": "error",
+            "errors": [{"line": None, "message": "没有可联立的有效约束行。"}],
+        }
+
+    names, index, base_edges = _build_graph(rows)
+
+    def run(k: int):
+        # k=0 直接用原图，其余 k 用扩展边（_expanded_edges 与 k=0 等价，特判只为少一次构造）
+        edges = base_edges if k == 0 else _expanded_edges(rows, index, k)
+        return _relax_all(names, edges)
+
+    # 指数放大找可行上界（可行性随 k 单调）：lo_feasible 已知最小、hi_feasible 已知可行
+    dist0, _, last0 = run(0)
+    if last0 is None:
+        k_min = 0
+        dist = dist0
+    else:
+        lo_feasible = 0
+        hi_feasible = 1
+        d, _, last = run(hi_feasible)
+        while last is not None:
+            lo_feasible = hi_feasible
+            hi_feasible *= 2
+            d, _, last = run(hi_feasible)
+        # 在 (不可行, 可行] 间二分最小可行整数 k
+        while hi_feasible - lo_feasible > 1:
+            mid = (lo_feasible + hi_feasible) // 2
+            _, _, last_mid = run(mid)
+            if last_mid is not None:
+                lo_feasible = mid
+            else:
+                hi_feasible = mid
+        k_min = hi_feasible
+        dist, _, _ = run(k_min)
+
+    # 扩展后可行时间线：平移到最早事件为第 0 分钟
+    base = min(dist)
+    minutes = [dist[i] - base for i in range(len(names))]
+    timeline = [{"event": names[i], "minute": minutes[i]} for i in range(len(names))]
+    timeline.sort(key=lambda x: (x["minute"], x["event"]))
+
+    # 每行：原区间、扩展区间 [lo−k,hi+k]、每侧实际扩量（均为 k）与时间线实际差值
+    row_checks = [
+        {
+            "line": r.line,
+            "a": r.a,
+            "b": r.b,
+            "low": r.low,
+            "high": r.high,
+            "expanded_low": r.low - k_min,
+            "expanded_high": r.high + k_min,
+            "extend_low": k_min,
+            "extend_high": k_min,
+            "actual": dist[index[r.b]] - dist[index[r.a]],
+        }
+        for r in rows
+    ]
+
+    witness = None
+    if k_min > 0:
+        # 在 k−1 下还原闭合冲突链：说明 k−1 已不可行、为何 k 不能再缩小
+        _, pred_w, last_w = run(k_min - 1)
+        conflict = _conflict_result(
+            names, pred_w, last_w, len(names),
+            step_builder=_tolerance_step_builder(rows),
+        )["conflict"]
+        steps = conflict["steps"]
+        edge_count = len(steps)
+        # k−1 环权和（即 conflict.weight_sum，必为负）；原始界值环权和 = 该值 − 边数 × (k−1)
+        expanded_sum = conflict["weight_sum"]
+        original_sum = expanded_sum - edge_count * (k_min - 1)
+        # 该闭合环自身要求的最小统一容差：每条边放宽 q 分钟后环权 = 原始环权和 + 边数 × q ≥ 0
+        required_k = (-original_sum + edge_count - 1) // edge_count  # ceil(−原始环权和 / 边数)
+        witness = {
+            "k_probe": k_min - 1,
+            "steps": steps,
+            "edge_count": edge_count,
+            "expanded_weight_sum": expanded_sum,
+            "original_weight_sum": original_sum,
+            "required_k": required_k,
+            "closes_to": conflict["closes_to"],
+            "message": (
+                f"k = {k_min - 1} 时下列 {edge_count} 条扩展界首尾相接仍构成闭合负环"
+                f"（环权 {expanded_sum} < 0）：这些行的原始界值环权和为 {original_sum}，"
+                f"每条界每侧再放宽 1 分钟只能为环权贡献 +{edge_count}，"
+                f"故该环要求统一容差至少为 ⌈{-original_sum}/{edge_count}⌉ = {required_k} 分钟，"
+                f"k 不能再缩小；k = {k_min} 时该环权恰好转为非负，全部约束可解。"
+            ),
+        }
+
+    if k_min == 0:
+        message = "最小容差 k = 0：原区间无需任何放宽即已可解，以下为原文的一条可行时间线。"
+    else:
+        message = (
+            f"最小容差 k = {k_min} 分钟：把每条区间同时扩为 [下界−{k_min}, 上界+{k_min}] 后全部约束可解；"
+            f"k = {k_min - 1} 仍存在闭合冲突链（见下），故容差不能再缩小。"
+        )
+
+    return {
+        "status": "ok",
+        "k": k_min,
+        "message": message,
+        "timeline": timeline,
+        "rows": row_checks,
+        "event_count": len(names),
+        "line_count": len(rows),
+        "witness": witness,
     }

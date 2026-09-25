@@ -43,6 +43,11 @@
         <strong>首个来源为参考时钟</strong>（偏移固定为 0），同一来源共用一个整数分钟偏移（事件真实分钟 = 本地分钟 + 偏移），
         记录等式与区间共同联立；矛盾时给出含<strong>区间行号或记录行号、所用界值</strong>的闭合冲突链；
         可解时给出各来源相对参考时钟的<strong>最紧偏移上下界</strong>，未与参考来源连通的来源标为<strong>“未定位”</strong>，不显示伪精确偏移。
+        若想知道“所有说法统一放宽多少分钟才能自洽”，还可使用<strong>全局容差评估</strong>：
+        每条区间 <code>[lo,hi]</code> 同时扩为 <code>[lo−k,hi+k]</code>（k 为非负整数分钟），
+        后端求<strong>使全部约束可解的最小 k</strong>，返回最小 k、<strong>一条扩展后可行时间线</strong>
+        及每行原区间与扩展区间的实际差值；k&gt;0 时给出 <strong>k−1 时含原始行号与所用扩展界值的闭合冲突链</strong>，
+        说明为何容差不能再缩小。
       </p>
     </header>
 
@@ -144,6 +149,26 @@
     </section>
 
     <section id="maxgap-result" aria-live="polite"></section>
+
+    <section class="input-area">
+      <label><strong>全局容差评估</strong></label>
+      <p class="muted" style="margin-top:0">
+        直接使用上方“事件区间”文本：每条有效区间 <code>[lo,hi]</code> 同时扩为
+        <code>[lo−k, hi+k]</code>（<strong>k 为非负整数分钟，上下界各放宽 k</strong>），
+        后端用同一套差分约束 Bellman-Ford 求<strong>使全部约束可解的最小 k</strong>
+        （可行性随 k 单调，指数放大 + 二分）。返回最小 k、<strong>一条扩展后可行时间线</strong>
+        （最早事件为第 0 分钟）与<strong>每行原区间、扩展区间及每侧实际扩量、时间线实际差值</strong>。
+        当 <strong>k &gt; 0</strong> 时，另给出 <strong>k−1 时的闭合冲突链</strong>：
+        每环标注<strong>原始行号、原界值与 k−1 时所用扩展界值</strong>，并说明该环要求的
+        最小统一容差，解释为何不能再缩小。空文本视为空约束集（k = 0）；语法错误沿用逐行报错。
+      </p>
+      <div class="button-row" style="margin-top:0">
+        <button id="btn-tolerance" class="primary">求最小容差</button>
+        <button id="btn-tolerance-example">填入容差示例</button>
+      </div>
+    </section>
+
+    <section id="tolerance-result" aria-live="polite"></section>
 
     <section class="input-area">
       <label for="clock-records"><strong>记录时钟对齐（每行一条记录）</strong></label>

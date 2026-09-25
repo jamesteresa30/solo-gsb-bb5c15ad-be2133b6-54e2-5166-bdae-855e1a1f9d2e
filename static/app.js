@@ -160,6 +160,14 @@ const EXAMPLE_CLOCK_CONFLICT_RECORDS = [
   "老李,午饭,115",
 ].join("\n");
 
+// 全局容差评估示例：同矛盾示例的三句循环叙述（下界环权 -95，共 3 条边），
+// 统一容差至少 ⌈95/3⌉ = 32 分钟；k=32 全部约束可解，k=31 时该环仍为 -2 的负环。
+const EXAMPLE_TOLERANCE = [
+  "早饭,开会,30,60",
+  "开会,晚饭,45,90",
+  "晚饭,早饭,20,50",
+].join("\n");
+
 const $ = (id) => document.getElementById(id);
 const resultEl = $("result");
 const redundancyEl = $("redundancy-result");
@@ -186,6 +194,7 @@ const maxgapOrderEl = $("maxgap-order");
 const maxgapEl = $("maxgap-result");
 const clockRecordsEl = $("clock-records");
 const clockEl = $("clock-result");
+const toleranceEl = $("tolerance-result");
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -769,6 +778,7 @@ $("btn-clear").addEventListener("click", () => {
   itineraryEl.innerHTML = "";
   maxgapEl.innerHTML = "";
   clockEl.innerHTML = "";
+  toleranceEl.innerHTML = "";
   refreshLineOptions();
   inputEl.focus();
 });
@@ -2184,4 +2194,187 @@ $("btn-clock-clear").addEventListener("click", () => {
 });
 clockRecordsEl.addEventListener("input", () => {
   clockEl.innerHTML = "";  // 记录已变，旧的时钟对齐结论作废
+});
+
+// ---------- 全局容差评估 ----------
+
+// 容差矛盾链的标签：与通用矛盾链一致，但在界值处展示“原界值 → k−1 扩展界值”
+function toleranceStepTagHtml(s) {
+  const expandedText = s.original_bound !== undefined
+    ? `${s.original_bound} → ${s.bound}`
+    : String(s.bound);
+  return `<span class="tag ${s.kind}">第 ${s.line} 行 · ${esc(s.kind_label)} ${expandedText}</span>`;
+}
+
+// k−1 闭合冲突链：每环标注原始行号、原界值与 k−1 时所用扩展界值
+function toleranceConflictChainHtml(w) {
+  const parts = [];
+  w.steps.forEach((s, i) => {
+    if (i === 0) parts.push(`<div class="chain-node">${esc(s.from)}</div>`);
+    parts.push(`
+      <div class="chain-edge">
+        ${toleranceStepTagHtml(s)}
+        <span class="rel">${esc(s.expanded_relation || s.relation)}</span>
+        <span class="chain-arrow">→</span>
+      </div>
+      <div class="chain-node">${esc(s.to)}</div>`);
+  });
+  parts.push(`
+    <div class="chain-edge"><span class="muted">闭合回到</span><span class="chain-arrow">⟲</span></div>
+    <div class="chain-node">${esc(w.closes_to)}</div>`);
+  return `<div class="chain">${parts.join("")}</div>`;
+}
+
+// 扩展后可行时间线卡片（与其它模块同口径，最早事件为第 0 分钟）
+function toleranceTimelineCardHtml(data) {
+  if (!data.timeline.length) {
+    return `<div class="card"><h3>扩展后可行时间线</h3>
+      <p class="muted">空时间线：没有任何非空约束（空约束集视为可行）。</p></div>`;
+  }
+  const maxMinute = Math.max(...data.timeline.map((t) => t.minute));
+  const points = data.timeline.map((t) => `
+    <div class="tl-point">
+      <div class="tl-dot"></div>
+      <div class="tl-name">${esc(t.event)}</div>
+      <div class="tl-time">第 ${t.minute} 分钟</div>
+    </div>`).join("");
+  const rows = data.timeline.map((t) =>
+    `<tr><td>${esc(t.event)}</td><td class="num">${t.minute}</td></tr>`).join("");
+  return `
+    <div class="card">
+      <h3>扩展后可行时间线（k = ${data.k}）</h3>
+      <div class="timeline-track">
+        <div class="tl-line"></div>
+        <div class="tl-grid">${points}</div>
+      </div>
+      <table>
+        <thead><tr><th>事件</th><th class="num">分钟（最早事件 = 0）</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="muted">时间跨度：0 ~ ${maxMinute} 分钟。所有事件可整体平移，差值不变。</p>
+    </div>`;
+}
+
+// 每行原区间 vs 扩展区间与时间线实际差值
+function toleranceRowsCardHtml(data) {
+  if (!data.rows.length) return "";
+  const rows = data.rows.map((r) => {
+    const fitOrig = r.low <= r.actual && r.actual <= r.high;
+    const fitExpanded = r.expanded_low <= r.actual && r.actual <= r.expanded_high;
+    return `<tr>
+      <td class="num">${r.line}</td>
+      <td>${esc(r.a)} → ${esc(r.b)}</td>
+      <td class="num">[${r.low}, ${r.high}]</td>
+      <td class="num">[${r.expanded_low}, ${r.expanded_high}]</td>
+      <td class="num">−${r.extend_low} / +${r.extend_high}</td>
+      <td class="num">${r.actual}</td>
+      <td>${fitOrig ? '<span class="ok-text">满足</span>' : '<span style="color:var(--err)">不满足</span>'}</td>
+      <td>${fitExpanded ? '<span class="ok-text">满足</span>' : '<span style="color:var(--err)">不满足</span>'}</td>
+    </tr>`;
+  }).join("");
+  return `
+    <div class="card">
+      <h3>每行原区间与扩展区间（实际扩量与时间线差值）</h3>
+      <table>
+        <thead><tr>
+          <th class="num">行号</th><th>事件对</th>
+          <th class="num">原区间</th><th class="num">扩展区间 [lo−k, hi+k]</th>
+          <th class="num">下界 / 上界扩量</th><th class="num">时间线实际差值</th>
+          <th>原区间</th><th>扩展区间</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="muted">每行下界放宽 k 分钟（lo−k）、上界放宽 k 分钟（hi+k）；“实际差值”取自上方扩展后可行时间线，
+      故必然落在扩展区间内；k = 0 时扩展区间即原区间，两列结果一致。</p>
+    </div>`;
+}
+
+// k>0 时的 k−1 闭合冲突链卡片：解释为何 k 不能再缩小
+function toleranceWitnessCardHtml(data) {
+  const w = data.witness;
+  if (!w) return "";
+  const detailRows = w.steps.map((s) => `
+    <tr>
+      <td class="num">第 ${s.line} 行</td>
+      <td>${esc(s.from)} → ${esc(s.to)}</td>
+      <td><span class="tag ${s.kind}">${esc(s.kind_label)}</span></td>
+      <td class="num">${s.original_bound}</td>
+      <td class="num">${s.bound}</td>
+      <td class="num">${s.expansion}</td>
+      <td>${esc(s.expanded_relation || s.relation)}</td>
+    </tr>`).join("");
+  return `
+    <div class="card">
+      <h3>为何不能再缩小：k = ${w.k_probe} 时的闭合冲突链</h3>
+      <p>${esc(w.message)}</p>
+      <table>
+        <thead><tr>
+          <th class="num">试探容差</th><th class="num">环上边数</th>
+          <th class="num">k−1 环权和</th><th class="num">原始界值环权和</th>
+          <th class="num">该环所需最小容差</th>
+        </tr></thead>
+        <tbody><tr>
+          <td class="num">${w.k_probe}</td>
+          <td class="num">${w.edge_count}</td>
+          <td class="num">${w.expanded_weight_sum} &lt; 0</td>
+          <td class="num">${w.original_weight_sum}</td>
+          <td class="num"><strong>⌈${-w.original_weight_sum}/${w.edge_count}⌉ = ${w.required_k}</strong></td>
+        </tr></tbody>
+      </table>
+      ${toleranceConflictChainHtml(w)}
+      <table>
+        <thead><tr>
+          <th class="num">行号</th><th>图中方向</th><th>使用的界</th>
+          <th class="num">原界值</th><th class="num">k−1 扩展界值</th><th class="num">扩量</th><th>含义</th>
+        </tr></thead>
+        <tbody>${detailRows}</tbody>
+      </table>
+      <p class="muted">链中每环来自一条原始区间行：上界环显示“原上界 → 原上界 + (k−1)”，
+      下界环显示“原下界 → 原下界 − (k−1)”；各扩展界首尾相接的环权和为负，
+      即 k−1 时这些放宽后的说法仍然打架。</p>
+    </div>`;
+}
+
+function renderTolerance(data) {
+  const banner = data.k === 0
+    ? `<div class="banner ok">
+        <h2>✓ 最小容差 k = 0</h2>
+        <p>${esc(data.message)}</p>
+      </div>`
+    : `<div class="banner conflict">
+        <h2>最小容差 k = ${data.k} 分钟</h2>
+        <p>${esc(data.message)}</p>
+      </div>`;
+  toleranceEl.innerHTML = `
+    ${banner}
+    ${toleranceTimelineCardHtml(data)}
+    ${toleranceRowsCardHtml(data)}
+    ${toleranceWitnessCardHtml(data)}`;
+}
+
+async function queryTolerance() {
+  toleranceEl.innerHTML = `<div class="card muted">求最小统一容差中…</div>`;
+  try {
+    const resp = await fetch("/api/tolerance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: inputEl.value }),
+    });
+    const data = await resp.json();
+    if (data.status === "ok") renderTolerance(data);
+    else renderErrors(data.errors || [{ line: null, message: "未知错误。" }], toleranceEl);
+  } catch (err) {
+    toleranceEl.innerHTML = `
+      <div class="banner err"><h2>请求失败</h2><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+$("btn-tolerance").addEventListener("click", queryTolerance);
+$("btn-tolerance-example").addEventListener("click", () => {
+  inputEl.value = EXAMPLE_TOLERANCE;
+  refreshLineOptions();
+  queryTolerance();
+});
+inputEl.addEventListener("input", () => {
+  toleranceEl.innerHTML = "";  // 区间已变，旧的容差结论作废
 });
